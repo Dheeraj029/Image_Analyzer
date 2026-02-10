@@ -1,5 +1,7 @@
 import streamlit as st
 import os
+import json
+import requests  # Needed to download image from URL
 from dotenv import load_dotenv
 from analyzer import HybridImageAnalyzer, make_decision
 
@@ -14,61 +16,56 @@ st.set_page_config(page_title="Hybrid AI Analyzer", page_icon="👁️", layout=
 st.markdown("""
 <style>
     .stApp { background-color: #0E1117; color: #FAFAFA; }
-    
-    /* Standard Card */
     .css-card {
-        background-color: #262730; 
-        padding: 25px; 
-        border-radius: 10px;
-        border: 1px solid #41444C; 
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        margin-bottom: 20px;
+        background-color: #262730; padding: 25px; border-radius: 10px;
+        border: 1px solid #41444C; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-bottom: 20px;
     }
-    
-    /* AI Generated Title Style */
     .ai-title {
-        color: #A6E3E9;
-        font-size: 24px;
-        font-weight: 700;
-        margin-bottom: 10px;
-        border-bottom: 1px solid #41444C;
-        padding-bottom: 10px;
+        color: #A6E3E9; font-size: 24px; font-weight: 700; margin-bottom: 10px;
+        border-bottom: 1px solid #41444C; padding-bottom: 10px;
     }
-    
-    /* Summary Text */
-    .ai-summary {
-        font-size: 16px;
-        line-height: 1.6;
-        color: #E0E0E0;
-    }
-    
-    /* Metric Box Styles */
+    .ai-summary { font-size: 16px; line-height: 1.6; color: #E0E0E0; }
     .metric-box {
-        background-color: #1E1E24;
-        border: 1px solid #41444C;
-        border-radius: 8px;
-        padding: 15px;
-        text-align: center;
-        height: 100px;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
+        background-color: #1E1E24; border: 1px solid #41444C; border-radius: 8px;
+        padding: 15px; text-align: center; height: 100px;
+        display: flex; flex-direction: column; justify-content: center; align-items: center;
     }
-    .metric-label { font-size: 12px; color: #A0A0A0; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }
+    .metric-label { font-size: 12px; color: #A0A0A0; text-transform: uppercase; margin-bottom: 5px; }
     .metric-value { font-size: 20px; font-weight: 700; color: #FFFFFF; }
-    
-    /* Status Colors */
     .text-green { color: #00FF7F !important; }
     .text-yellow { color: #FFD700 !important; }
     .text-red { color: #FF4B4B !important; }
-    
     .stProgress > div > div > div > div { background-color: #00CC96; }
 </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. SETUP & SIDEBAR
+# 2. HELPER FUNCTION: Download Image safely
+# -----------------------------------------------------------------------------
+def load_image_from_url(url):
+    """
+    Downloads an image from a URL and converts it to bytes.
+    Returns: (image_bytes, error_message)
+    """
+    try:
+        # User-Agent header mimics a browser to avoid 403 Forbidden errors
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        # Check if the content is actually an image
+        content_type = response.headers.get('Content-Type', '')
+        if 'image' not in content_type:
+            return None, "The URL did not return an image. It might be a webpage."
+            
+        return response.content, None
+    except requests.exceptions.MissingSchema:
+        return None, "Invalid URL. Please include http:// or https://"
+    except Exception as e:
+        return None, f"Could not download image: {str(e)}"
+
+# -----------------------------------------------------------------------------
+# 3. SETUP & SIDEBAR
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -84,18 +81,43 @@ with st.sidebar:
     st.info("Ensure `.env` file is present.")
 
 # -----------------------------------------------------------------------------
-# 3. MAIN APP LOGIC
+# 4. MAIN APP LOGIC
 # -----------------------------------------------------------------------------
 st.title("👁️ Hybrid AI Image Analyzer")
 st.markdown("### Computer Vision v3.2 + Azure OpenAI GPT-4")
 
-uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
+# INPUT TABS
+input_mode = st.radio("Select Input Mode:", ["Upload Image", "Image URL"], horizontal=True, label_visibility="collapsed")
 
-if uploaded_file:
+final_image_bytes = None
+display_image = None
+
+# --- HANDLE INPUTS ---
+if input_mode == "Upload Image":
+    uploaded_file = st.file_uploader("Choose a file...", type=["jpg", "png", "jpeg"])
+    if uploaded_file:
+        final_image_bytes = uploaded_file.getvalue()
+        display_image = uploaded_file
+
+else:
+    url_input = st.text_input("Paste Image URL:", placeholder="https://example.com/image.jpg")
+    if url_input:
+        with st.spinner("Downloading image..."):
+            # Download image locally first to avoid Azure 400 errors
+            img_data, error = load_image_from_url(url_input.strip())
+            
+            if error:
+                st.error(f"❌ {error}")
+            else:
+                final_image_bytes = img_data
+                display_image = img_data  # Streamlit can display raw bytes
+
+# --- ANALYZE LOGIC ---
+if final_image_bytes and display_image:
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.image(uploaded_file, caption="Source Image", use_container_width=True)
+        st.image(display_image, caption="Source Image", use_container_width=True)
         analyze_btn = st.button("🔍 Analyze Image", type="primary", use_container_width=True)
 
     if analyze_btn:
@@ -103,7 +125,7 @@ if uploaded_file:
             if not vision_key or not openai_key:
                 st.error("Missing API Keys in .env file.")
             else:
-                with st.spinner("🤖 Vision API analyzing pixels..."):
+                with st.spinner("🤖 Vision API analyzing..."):
                     analyzer = HybridImageAnalyzer(
                         os.getenv("AZURE_VISION_ENDPOINT"),
                         os.getenv("AZURE_VISION_KEY"),
@@ -112,22 +134,19 @@ if uploaded_file:
                         os.getenv("AZURE_OPENAI_DEPLOYMENT")
                     )
                     
-                    # 1. Get Technical Vision Data
-                    image_bytes = uploaded_file.getvalue()
-                    vision_result = analyzer.analyze_visual_features(image_bytes)
+                    # SEND BYTES ALWAYS (Fixes 400 Bad Request for URLs)
+                    vision_result = analyzer.analyze_visual_features(final_image_bytes)
                 
                 if "error" in vision_result:
                     st.error(f"Vision API Error: {vision_result['error']}")
                 else:
-                    # 2. Get AI Title & Summary
+                    # Get AI Title & Summary
                     with st.spinner("🧠 GPT-4 generating title and summary..."):
                         ai_response = analyzer.generate_human_summary(vision_result)
                         ai_title = ai_response['title']
                         ai_summary = ai_response['summary']
 
                     # --- UI DISPLAY ---
-                    
-                    # AI Summary Card with Title
                     st.markdown(f"""
                         <div class="css-card">
                             <div class="ai-title">✨ {ai_title}</div>
@@ -196,9 +215,22 @@ if uploaded_file:
                         
                     with tab_json:
                         st.json(vision_result)
+                        
+                        # DOWNLOAD BUTTON
+                        st.markdown("---")
+                        json_string = json.dumps(vision_result, indent=4)
+                        st.download_button(
+                            label="📥 Download JSON Result",
+                            data=json_string,
+                            file_name="analysis_result.json",
+                            mime="application/json"
+                        )
 
                     if confidence < 0.5:
                         st.warning("⚠️ System is uncertain. Please verify manually.")
 
+elif input_mode == "Image URL" and not final_image_bytes:
+    # Helper text when empty
+    st.info("👆 Paste a valid image URL to start (e.g., ends in .jpg or .png)")
 else:
     st.info("👆 Upload an image to start.")

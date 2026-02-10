@@ -1,6 +1,5 @@
 # 👁️ Hybrid AI Image Analyzer
-
-> **Assignment 3 Submission**  
+ 
 > A professional Python application leveraging **Azure Computer Vision (v3.2)** for technical detection and **Azure OpenAI (GPT-4)** for human-like image summarization.
 
 ---

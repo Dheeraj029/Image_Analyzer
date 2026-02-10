@@ -1,6 +1,6 @@
 import requests
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Union
 from openai import AzureOpenAI
 
 # Configure Logging
@@ -13,11 +13,9 @@ class HybridImageAnalyzer:
     """
 
     def __init__(self, vision_endpoint, vision_key, openai_endpoint, openai_key, openai_deployment):
-        # 1. Setup Computer Vision
         self.vision_url = f"{vision_endpoint.rstrip('/')}/vision/v3.2/analyze"
         self.vision_key = vision_key
         
-        # 2. Setup Azure OpenAI
         self.openai_deployment = openai_deployment
         try:
             self.openai_client = AzureOpenAI(
@@ -29,13 +27,13 @@ class HybridImageAnalyzer:
             logger.error(f"OpenAI Client Init Error: {e}")
             self.openai_client = None
 
-    def analyze_visual_features(self, image_bytes: bytes) -> Dict[str, Any]:
+    def analyze_visual_features(self, image_input: Union[bytes, str]) -> Dict[str, Any]:
         """
-        Calls Azure Computer Vision v3.2 for Object Detection & Tagging.
+        Calls Azure Computer Vision v3.2.
+        Accepts either image_bytes (Binary) OR image_url (String).
         """
         headers = {
-            'Ocp-Apim-Subscription-Key': self.vision_key,
-            'Content-Type': 'application/octet-stream'
+            'Ocp-Apim-Subscription-Key': self.vision_key
         }
         
         params = {
@@ -44,15 +42,30 @@ class HybridImageAnalyzer:
         }
 
         try:
-            response = requests.post(
-                self.vision_url, 
-                headers=headers, 
-                params=params, 
-                data=image_bytes, 
-                timeout=10
-            )
+            # Check if input is Bytes (Upload) or String (URL)
+            if isinstance(image_input, bytes):
+                headers['Content-Type'] = 'application/octet-stream'
+                response = requests.post(
+                    self.vision_url, 
+                    headers=headers, 
+                    params=params, 
+                    data=image_input, 
+                    timeout=15
+                )
+            else:
+                # Assume it is a URL string
+                headers['Content-Type'] = 'application/json'
+                response = requests.post(
+                    self.vision_url, 
+                    headers=headers, 
+                    params=params, 
+                    json={'url': image_input}, 
+                    timeout=15
+                )
+
             response.raise_for_status()
             return response.json()
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Vision API Error: {e}")
             return {"error": str(e)}
@@ -65,7 +78,6 @@ class HybridImageAnalyzer:
         if not self.openai_client:
             return {"title": "Error", "summary": "OpenAI Client not initialized."}
 
-        # Extract raw data to feed GPT
         description = vision_result.get("description", {}).get("captions", [{}])[0].get("text", "")
         tags = [t["name"] for t in vision_result.get("tags", []) if t["confidence"] > 0.6]
         objects = [o["object"] for o in vision_result.get("objects", [])]
@@ -73,7 +85,6 @@ class HybridImageAnalyzer:
         if not description:
             return {"title": "Unknown Image", "summary": "Not enough data to generate a summary."}
 
-        # --- UPDATED PROMPT FOR TITLE + SUMMARY ---
         prompt = f"""
         Analyze this image data:
         - Basic Caption: "{description}"
@@ -101,12 +112,10 @@ class HybridImageAnalyzer:
             
             content = response.choices[0].message.content.strip()
             
-            # Parse the Title | Summary format
             if "|" in content:
                 parts = content.split("|", 1)
                 return {"title": parts[0].strip(), "summary": parts[1].strip()}
             else:
-                # Fallback if AI forgets the pipe
                 return {"title": "Image Analysis", "summary": content}
 
         except Exception as e:
